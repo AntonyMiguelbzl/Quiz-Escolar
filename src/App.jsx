@@ -1,8 +1,29 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Timer, Award, RotateCcw, CheckCircle2, XCircle, Play, User, Loader2, Sparkles, LogOut, Trophy, Zap, BookOpen, Plus, Pencil, Trash2, X } from 'lucide-react';
+import { Timer, Award, RotateCcw, CheckCircle2, XCircle, Play, User, Loader2, Sparkles, LogOut, Trophy, Zap, ShieldCheck, Plus, Pencil, Trash2 } from 'lucide-react';
 
-const TEMPO_POR_PERGUNTA = 20;
+const TEMPO_PARTIDA_KEY = 'ecoplay-tempo-partida-v1';
+const TEMPO_PADRAO_SEGUNDOS = 20;
 const PERGUNTAS_PERSONALIZADAS_KEY = 'ecoplay-perguntas-v1';
+const SENHA_ADMIN = 'admin123';
+
+const carregarTempoPartida = () => {
+  try {
+    const tempoSalvo = Number(localStorage.getItem(TEMPO_PARTIDA_KEY));
+    return Number.isInteger(tempoSalvo) && tempoSalvo >= 1 && tempoSalvo <= 3600
+      ? tempoSalvo
+      : TEMPO_PADRAO_SEGUNDOS;
+  } catch {
+    return TEMPO_PADRAO_SEGUNDOS;
+  }
+};
+
+const formatarTempo = (tempoSegundos) => {
+  const minutos = Math.floor(tempoSegundos / 60);
+  const segundosRestantes = tempoSegundos % 60;
+  return minutos > 0
+    ? `${minutos}:${String(segundosRestantes).padStart(2, '0')}`
+    : `${segundosRestantes}s`;
+};
 
 const embaralhar = (itens) => {
   const copia = [...itens];
@@ -95,16 +116,21 @@ export default function App() {
   const [ranking, setRanking] = useState(carregarRanking);
   const [rankingSalvo, setRankingSalvo] = useState(false);
   const [perguntasPersonalizadas, setPerguntasPersonalizadas] = useState(carregarPerguntasPersonalizadas);
-  const [gerenciadorAberto, setGerenciadorAberto] = useState(false);
   const [perguntaEditandoId, setPerguntaEditandoId] = useState(null);
   const [formPergunta, setFormPergunta] = useState({ pergunta: '', opcoes: ['', '', '', ''], correta: 0 });
   const [erroFormularioPergunta, setErroFormularioPergunta] = useState('');
+  const [senhaAdmin, setSenhaAdmin] = useState('');
+  const [erroAdmin, setErroAdmin] = useState(false);
+  const [tempoPartida, setTempoPartida] = useState(carregarTempoPartida);
+  const [tempoPartidaEntrada, setTempoPartidaEntrada] = useState(() => String(tempoPartida));
+  const [mensagemTempo, setMensagemTempo] = useState('');
+  const [erroTempo, setErroTempo] = useState('');
   const [idsPerguntasUsadas, setIdsPerguntasUsadas] = useState([]);
 
   const [indicePergunta, setIndicePergunta] = useState(0);
   const [perguntasDaPartida, setPerguntasDaPartida] = useState([]);
   const [pontos, setPontos] = useState(0);
-  const [tempo, setTempo] = useState(TEMPO_POR_PERGUNTA);
+  const [tempo, setTempo] = useState(tempoPartida);
   const [opcaoSelecionada, setOpcaoSelecionada] = useState(null);
   const [respondido, setRespondido] = useState(false);
   const [bonusAcumulado, setBonusAcumulado] = useState(0);
@@ -156,7 +182,6 @@ export default function App() {
       ? { pergunta: pergunta.pergunta, opcoes: [...pergunta.opcoes], correta: pergunta.correta }
       : { pergunta: '', opcoes: ['', '', '', ''], correta: 0 });
     setErroFormularioPergunta('');
-    setGerenciadorAberto(true);
   };
 
   const salvarPergunta = (evento) => {
@@ -201,19 +226,23 @@ export default function App() {
     if (perguntaEditandoId === id) abrirGerenciador();
   };
 
-  const iniciarComTransicao = () => {
+  const iniciarComTransicao = (reiniciarPerguntas = false) => {
     if (!nomeJogador.trim()) {
       setErroNome(true);
       return;
     }
-    if (perguntasDisponiveis.length === 0) return;
+    const perguntasParaJogar = reiniciarPerguntas
+      ? perguntasPersonalizadas
+      : perguntasDisponiveis;
+    if (perguntasParaJogar.length === 0) return;
 
     setErroNome(false);
     setRankingSalvo(false);
     setFimPorPerguntas(false);
+    if (reiniciarPerguntas) setIdsPerguntasUsadas([]);
     setFase('transicao');
     const perguntasEmbaralhadas = criarPerguntasDaPartida(
-      perguntasDisponiveis,
+      perguntasParaJogar,
       perguntasDaPartida
     );
 
@@ -221,7 +250,7 @@ export default function App() {
       setPerguntasDaPartida(perguntasEmbaralhadas);
       setIndicePergunta(0);
       setPontos(0);
-      setTempo(TEMPO_POR_PERGUNTA);
+      setTempo(tempoPartida);
       setOpcaoSelecionada(null);
       setRespondido(false);
       setBonusAcumulado(0);
@@ -254,7 +283,7 @@ export default function App() {
       setStreak(0);
     }
 
-    const bonusTempo = acertou ? 2 : 0;
+    const bonusTempo = acertou ? 4 : 0;
     setBonusAcumulado(bonusTempo);
     if (bonusTempo > 0) {
       setTempo((tempoAtual) => tempoAtual + bonusTempo);
@@ -311,7 +340,7 @@ export default function App() {
     setFase('login');
     setIndicePergunta(0);
     setPontos(0);
-    setTempo(TEMPO_POR_PERGUNTA);
+    setTempo(tempoPartida);
     setOpcaoSelecionada(null);
     setRespondido(false);
     setBonusAcumulado(0);
@@ -324,6 +353,47 @@ export default function App() {
   const limparRanking = () => {
     localStorage.removeItem(RANKING_KEY);
     setRanking([]);
+  };
+
+  const salvarConfiguracaoTempo = (evento) => {
+    evento.preventDefault();
+    const novoTempo = Number(tempoPartidaEntrada);
+
+    if (!Number.isInteger(novoTempo) || novoTempo < 1 || novoTempo > 3600) {
+      setErroTempo('Informe um tempo entre 1 e 3600 segundos.');
+      setMensagemTempo('');
+      return;
+    }
+
+    try {
+      localStorage.setItem(TEMPO_PARTIDA_KEY, String(novoTempo));
+      setTempoPartida(novoTempo);
+      setMensagemTempo('Tempo da partida salvo.');
+      setErroTempo('');
+    } catch {
+      setErroTempo('Não foi possível salvar o tempo neste navegador.');
+      setMensagemTempo('');
+    }
+  };
+
+  const entrarComoAdmin = (evento) => {
+    evento.preventDefault();
+
+    if (senhaAdmin !== SENHA_ADMIN) {
+      setErroAdmin(true);
+      return;
+    }
+
+    setErroAdmin(false);
+    setSenhaAdmin('');
+    abrirGerenciador();
+    setFase('admin');
+  };
+
+  const sairDoAdmin = () => {
+    setFase('login');
+    setSenhaAdmin('');
+    setErroAdmin(false);
   };
 
   return (
@@ -382,8 +452,8 @@ export default function App() {
                 {perguntasDisponiveis.length === 0 && (
                   <p className="text-xs text-amber-200" role="status">
                     {perguntasPersonalizadas.length === 0
-                      ? 'Cadastre pelo menos uma pergunta própria para liberar o jogo.'
-                      : 'Você já respondeu todas as perguntas cadastradas. Cadastre perguntas novas para continuar.'}
+                      ? 'Peça ao administrador para cadastrar perguntas e liberar o jogo.'
+                      : 'Você já respondeu todas as perguntas cadastradas. Peça ao administrador para adicionar perguntas.'}
                   </p>
                 )}
               </div>
@@ -399,11 +469,15 @@ export default function App() {
 
               <button
                 type="button"
-                onClick={() => abrirGerenciador()}
+                onClick={() => {
+                  setErroAdmin(false);
+                  setSenhaAdmin('');
+                  setFase('admin-login');
+                }}
                 className="w-full border border-emerald-800 bg-[#183427]/70 hover:bg-emerald-900/60 text-emerald-100 font-semibold py-3 px-5 rounded-xl transition-colors flex items-center justify-center gap-2 text-sm"
               >
-                <BookOpen className="w-4 h-4" />
-                <span>Minhas perguntas ({perguntasPersonalizadas.length})</span>
+                <ShieldCheck className="w-4 h-4" />
+                <span>Acesso do administrador</span>
               </button>
             </div>
 
@@ -413,14 +487,6 @@ export default function App() {
                   <Trophy className="w-5 h-5 text-amber-400" />
                   Ranking local
                 </h2>
-                {ranking.length > 0 && (
-                  <button
-                    onClick={limparRanking}
-                    className="text-xs text-slate-300 hover:text-white border border-slate-700 rounded-full px-2 py-1"
-                  >
-                    Resetar
-                  </button>
-                )}
               </div>
 
               {ranking.length === 0 ? (
@@ -445,38 +511,122 @@ export default function App() {
               )}
             </div>
           </div>
+        </div>
+      )}
 
-          {gerenciadorAberto && (
+      {fase === 'admin-login' && (
+        <div className="relative w-full min-h-screen flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-cover bg-center bg-no-repeat" style={{ backgroundImage: "url('https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=1600&auto=format&fit=crop')" }} />
+          <div className="absolute inset-0 bg-linear-to-t from-[#071b13] via-[#071b13]/90 to-[#10271b]/75 backdrop-blur-xs" />
+          <form onSubmit={entrarComoAdmin} className="relative z-10 w-full max-w-md bg-[#10251a]/95 border border-emerald-900/60 rounded-3xl p-8 shadow-2xl backdrop-blur-md space-y-6">
+            <div className="text-center space-y-2">
+              <div className="inline-flex items-center justify-center w-14 h-14 bg-emerald-500/15 border border-emerald-400/30 rounded-2xl text-emerald-300">
+                <ShieldCheck className="w-7 h-7" />
+              </div>
+              <h1 className="text-2xl font-extrabold text-white">Acesso do administrador</h1>
+            </div>
+            <label className="block space-y-2">
+              <span className="text-xs font-medium text-slate-300 uppercase tracking-wider">Senha</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={senhaAdmin}
+                onChange={(evento) => {
+                  setSenhaAdmin(evento.target.value);
+                  setErroAdmin(false);
+                }}
+                required
+                className="w-full bg-[#183427]/90 border border-emerald-900 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </label>
+            {erroAdmin && <p role="alert" className="text-sm text-rose-300">Senha incorreta. Tente novamente.</p>}
+            <button type="submit" className="w-full bg-emerald-700 hover:bg-emerald-600 text-white font-bold py-3 px-6 rounded-xl transition-colors">
+              Entrar como administrador
+            </button>
+            <button type="button" onClick={sairDoAdmin} className="w-full border border-emerald-800 text-slate-300 hover:text-white py-2.5 px-6 rounded-xl transition-colors">
+              Voltar
+            </button>
+          </form>
+        </div>
+      )}
+
+      {fase === 'admin' && (
             <div
-              className="fixed inset-0 z-60 bg-black/75 p-3 sm:p-6 flex items-center justify-center"
+              className="fixed inset-0 z-60 bg-[#071b13] p-3 sm:p-6 flex items-center justify-center"
               onMouseDown={(evento) => {
-                if (evento.target === evento.currentTarget) setGerenciadorAberto(false);
+                if (evento.target === evento.currentTarget) sairDoAdmin();
               }}
             >
               <section
-                role="dialog"
-                aria-modal="true"
+                role="main"
                 aria-labelledby="gerenciador-perguntas-titulo"
                 className="w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-[#10251a] border border-emerald-800 rounded-2xl shadow-2xl p-5 sm:p-7 space-y-6"
               >
                 <header className="flex items-start justify-between gap-4">
                   <div>
                     <h2 id="gerenciador-perguntas-titulo" className="text-xl font-bold text-white">
-                      Minhas perguntas
+                      Painel do administrador
                     </h2>
                     <p className="text-sm text-slate-400 mt-1">
-                      {perguntasPersonalizadas.length} pergunta(s) própria(s)
+                      Gerencie as perguntas e o ranking do EcoPlay.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setGerenciadorAberto(false)}
-                    aria-label="Fechar gerenciador de perguntas"
-                    className="p-2 text-slate-300 hover:text-white hover:bg-emerald-900/60 rounded-lg"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {ranking.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={limparRanking}
+                        className="border border-rose-900/70 text-rose-200 hover:bg-rose-950/50 px-3 py-2 rounded-lg text-xs font-semibold"
+                      >
+                        Limpar ranking
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={sairDoAdmin}
+                      aria-label="Sair do administrador"
+                      className="p-2 text-slate-300 hover:text-white hover:bg-emerald-900/60 rounded-lg"
+                    >
+                      <LogOut className="w-5 h-5" />
+                    </button>
+                  </div>
                 </header>
+
+                <form onSubmit={salvarConfiguracaoTempo} className="space-y-3 border-b border-emerald-900 pb-6">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                    <label className="block flex-1 space-y-1.5">
+                      <span className="text-xs font-medium uppercase tracking-wide text-slate-300">
+                        Tempo total da partida (segundos)
+                      </span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="3600"
+                        step="1"
+                        value={tempoPartidaEntrada}
+                        onChange={(evento) => {
+                          setTempoPartidaEntrada(evento.target.value);
+                          setMensagemTempo('');
+                          setErroTempo('');
+                        }}
+                        required
+                        className="w-full bg-[#183427] border border-emerald-900 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                    </label>
+                    <button
+                      type="submit"
+                      className="inline-flex items-center justify-center gap-2 bg-emerald-700 hover:bg-emerald-600 text-white font-semibold px-4 py-2.5 rounded-lg text-sm"
+                    >
+                      <Timer className="w-4 h-4" />
+                      Salvar tempo
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Os acertos continuam acrescentando 4 segundos ao cronômetro.
+                  </p>
+                  {erroTempo && <p role="alert" className="text-sm text-rose-300">{erroTempo}</p>}
+                  {mensagemTempo && <p role="status" className="text-sm text-emerald-300">{mensagemTempo}</p>}
+                </form>
 
                 <form onSubmit={salvarPergunta} className="space-y-4 border-b border-emerald-900 pb-6">
                   <h3 className="font-semibold text-emerald-100">
@@ -586,8 +736,6 @@ export default function App() {
                 </div>
               </section>
             </div>
-          )}
-        </div>
       )}
 
       {fase === 'transicao' && (
@@ -619,13 +767,13 @@ export default function App() {
               <div className="w-full bg-[#183427] rounded-full h-2 overflow-hidden border border-emerald-950 flex-1">
                 <div
                   className="bg-emerald-400 h-full transition-all duration-300"
-                  style={{ width: `${Math.min(100, (tempo / TEMPO_POR_PERGUNTA) * 100)}%` }}
+                  style={{ width: `${Math.min(100, (tempo / tempoPartida) * 100)}%` }}
                 />
               </div>
 
               <div className="flex items-center gap-1.5 text-amber-400 font-mono font-bold bg-amber-400/10 border border-amber-400/20 px-3 py-1 rounded-full text-xs shrink-0">
                 <Timer className="w-4 h-4" />
-                <span>{tempo}s</span>
+                <span>{formatarTempo(tempo)}</span>
               </div>
             </div>
 
@@ -724,25 +872,13 @@ export default function App() {
 
           <div className="space-y-3">
             <button
-              onClick={iniciarComTransicao}
-              disabled={perguntasDisponiveis.length === 0}
+              onClick={() => iniciarComTransicao(true)}
+              disabled={perguntasPersonalizadas.length === 0}
               className="w-full bg-emerald-700 hover:bg-emerald-600 active:scale-95 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-emerald-900/40 transition-all duration-200 flex items-center justify-center gap-2 text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-700 disabled:active:scale-100"
             >
               <RotateCcw className="w-4 h-4" />
               <span>Jogar Novamente</span>
             </button>
-
-            {perguntasDisponiveis.length === 0 && (
-              <button
-                onClick={() => {
-                  setFase('login');
-                  abrirGerenciador();
-                }}
-                className="w-full border border-emerald-800 bg-[#183427]/70 hover:bg-emerald-900/60 text-emerald-100 font-semibold py-2.5 px-5 rounded-xl transition-colors text-sm"
-              >
-                Cadastrar perguntas novas
-              </button>
-            )}
 
             <button
               onClick={voltarAoInicio}
