@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Timer, Award, RotateCcw, CheckCircle2, XCircle, Play, User, Loader2, Sparkles, LogOut, Trophy, Zap, ShieldCheck, Plus, Pencil, Trash2 } from 'lucide-react';
+import { supabase, supabaseConfigured, supabaseConfigurationError } from './supabase.js';
 
 const TEMPO_PARTIDA_KEY = 'ecoplay-tempo-partida-v1';
 const TEMPO_PADRAO_SEGUNDOS = 20;
 const PERGUNTAS_PERSONALIZADAS_KEY = 'ecoplay-perguntas-v1';
-const SENHA_ADMIN = 'admin123';
 
 const carregarTempoPartida = () => {
   try {
@@ -66,10 +66,9 @@ const criarPerguntasDaPartida = (bancoPerguntas, perguntasAnteriores) => {
   return perguntasEmbaralhadas;
 };
 
-const carregarPerguntasPersonalizadas = () => {
+const carregarPerguntasLegadas = () => {
   try {
     const perguntasSalvas = JSON.parse(localStorage.getItem(PERGUNTAS_PERSONALIZADAS_KEY) || '[]');
-
     if (!Array.isArray(perguntasSalvas)) return [];
 
     return perguntasSalvas.filter((pergunta) =>
@@ -86,15 +85,6 @@ const carregarPerguntasPersonalizadas = () => {
     );
   } catch {
     return [];
-  }
-};
-
-const persistirPerguntasPersonalizadas = (perguntas) => {
-  try {
-    localStorage.setItem(PERGUNTAS_PERSONALIZADAS_KEY, JSON.stringify(perguntas));
-    return true;
-  } catch {
-    return false;
   }
 };
 
@@ -115,12 +105,18 @@ export default function App() {
   const [erroNome, setErroNome] = useState(false);
   const [ranking, setRanking] = useState(carregarRanking);
   const [rankingSalvo, setRankingSalvo] = useState(false);
-  const [perguntasPersonalizadas, setPerguntasPersonalizadas] = useState(carregarPerguntasPersonalizadas);
+  const [perguntasPersonalizadas, setPerguntasPersonalizadas] = useState([]);
+  const [carregandoPerguntas, setCarregandoPerguntas] = useState(true);
+  const [erroCarregamentoPerguntas, setErroCarregamentoPerguntas] = useState('');
   const [perguntaEditandoId, setPerguntaEditandoId] = useState(null);
   const [formPergunta, setFormPergunta] = useState({ pergunta: '', opcoes: ['', '', '', ''], correta: 0 });
   const [erroFormularioPergunta, setErroFormularioPergunta] = useState('');
+  const [mensagemMigracao, setMensagemMigracao] = useState('');
+  const [emailAdmin, setEmailAdmin] = useState('');
   const [senhaAdmin, setSenhaAdmin] = useState('');
-  const [erroAdmin, setErroAdmin] = useState(false);
+  const [erroAdmin, setErroAdmin] = useState('');
+  const [carregandoAdmin, setCarregandoAdmin] = useState(false);
+  const [salvandoPergunta, setSalvandoPergunta] = useState(false);
   const [tempoPartida, setTempoPartida] = useState(carregarTempoPartida);
   const [tempoPartidaEntrada, setTempoPartidaEntrada] = useState(() => String(tempoPartida));
   const [mensagemTempo, setMensagemTempo] = useState('');
@@ -142,6 +138,42 @@ export default function App() {
   const perguntasDisponiveis = perguntasPersonalizadas.filter(
     (pergunta) => !idsPerguntasUsadas.includes(pergunta.id)
   );
+
+  useEffect(() => {
+    let ativo = true;
+
+    const carregarPerguntas = async () => {
+      if (!supabaseConfigured) {
+        setErroCarregamentoPerguntas(supabaseConfigurationError);
+        setCarregandoPerguntas(false);
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('perguntas')
+          .select('id, pergunta, opcoes, correta')
+          .order('created_at', { ascending: true });
+
+        if (error) throw error;
+        if (ativo) {
+          setPerguntasPersonalizadas(data);
+          setErroCarregamentoPerguntas('');
+        }
+      } catch (error) {
+        if (ativo) {
+          setErroCarregamentoPerguntas(`Não foi possível carregar as perguntas: ${error.message}`);
+        }
+      } finally {
+        if (ativo) setCarregandoPerguntas(false);
+      }
+    };
+
+    carregarPerguntas();
+    return () => {
+      ativo = false;
+    };
+  }, []);
 
   const salvarPontuacao = useCallback((pontuacaoFinal) => {
     if (!nomeJogador.trim() || rankingSalvo) return;
@@ -184,7 +216,7 @@ export default function App() {
     setErroFormularioPergunta('');
   };
 
-  const salvarPergunta = (evento) => {
+  const salvarPergunta = async (evento) => {
     evento.preventDefault();
 
     const pergunta = formPergunta.pergunta.trim();
@@ -195,35 +227,52 @@ export default function App() {
       return;
     }
 
-    const id = perguntaEditandoId || `personalizada-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = perguntaEditandoId || `personalizada-${crypto.randomUUID()}`;
     const perguntaSalva = { id, pergunta, opcoes, correta: formPergunta.correta };
-    const novasPerguntas = perguntaEditandoId
-      ? perguntasPersonalizadas.map((item) => item.id === perguntaEditandoId ? perguntaSalva : item)
-      : [...perguntasPersonalizadas, perguntaSalva];
+    setSalvandoPergunta(true);
+    setErroFormularioPergunta('');
 
-    if (!persistirPerguntasPersonalizadas(novasPerguntas)) {
-      setErroFormularioPergunta('Não foi possível salvar. Verifique o espaço disponível no navegador.');
-      return;
-    }
+    try {
+      const { data, error } = perguntaEditandoId
+        ? await supabase
+          .from('perguntas')
+          .update(perguntaSalva)
+          .eq('id', perguntaEditandoId)
+          .select('id, pergunta, opcoes, correta')
+          .single()
+        : await supabase
+          .from('perguntas')
+          .insert(perguntaSalva)
+          .select('id, pergunta, opcoes, correta')
+          .single();
 
-    setPerguntasPersonalizadas(novasPerguntas);
-    if (perguntaEditandoId) {
-      setIdsPerguntasUsadas((idsUsados) => idsUsados.filter((idUsado) => idUsado !== perguntaEditandoId));
+      if (error) throw error;
+      setPerguntasPersonalizadas((perguntasAtuais) => perguntaEditandoId
+        ? perguntasAtuais.map((item) => item.id === perguntaEditandoId ? data : item)
+        : [...perguntasAtuais, data]);
+      if (perguntaEditandoId) {
+        setIdsPerguntasUsadas((idsUsados) => idsUsados.filter((idUsado) => idUsado !== perguntaEditandoId));
+      }
+      abrirGerenciador();
+    } catch (error) {
+      setErroFormularioPergunta(`Não foi possível salvar a pergunta: ${error.message}`);
+    } finally {
+      setSalvandoPergunta(false);
     }
-    abrirGerenciador();
   };
 
-  const excluirPergunta = (id) => {
-    const novasPerguntas = perguntasPersonalizadas.filter((pergunta) => pergunta.id !== id);
+  const excluirPergunta = async (id) => {
+    setErroFormularioPergunta('');
+    try {
+      const { error } = await supabase.from('perguntas').delete().eq('id', id);
+      if (error) throw error;
 
-    if (!persistirPerguntasPersonalizadas(novasPerguntas)) {
-      setErroFormularioPergunta('Não foi possível excluir a pergunta.');
-      return;
+      setPerguntasPersonalizadas((perguntasAtuais) => perguntasAtuais.filter((pergunta) => pergunta.id !== id));
+      setIdsPerguntasUsadas((idsUsados) => idsUsados.filter((idUsado) => idUsado !== id));
+      if (perguntaEditandoId === id) abrirGerenciador();
+    } catch (error) {
+      setErroFormularioPergunta(`Não foi possível excluir a pergunta: ${error.message}`);
     }
-
-    setPerguntasPersonalizadas(novasPerguntas);
-    setIdsPerguntasUsadas((idsUsados) => idsUsados.filter((idUsado) => idUsado !== id));
-    if (perguntaEditandoId === id) abrirGerenciador();
   };
 
   const iniciarComTransicao = (reiniciarPerguntas = false) => {
@@ -376,24 +425,72 @@ export default function App() {
     }
   };
 
-  const entrarComoAdmin = (evento) => {
+  const entrarComoAdmin = async (evento) => {
     evento.preventDefault();
 
-    if (senhaAdmin !== SENHA_ADMIN) {
-      setErroAdmin(true);
+    if (!supabaseConfigured) {
+      setErroAdmin(supabaseConfigurationError);
       return;
     }
 
-    setErroAdmin(false);
-    setSenhaAdmin('');
-    abrirGerenciador();
-    setFase('admin');
+    setCarregandoAdmin(true);
+    setErroAdmin('');
+    let sessaoIniciada = false;
+    try {
+      const { error: erroLogin } = await supabase.auth.signInWithPassword({
+        email: emailAdmin.trim(),
+        password: senhaAdmin
+      });
+      if (erroLogin) throw erroLogin;
+      sessaoIniciada = true;
+
+      const { data, error } = await supabase
+        .from('perguntas')
+        .select('id, pergunta, opcoes, correta')
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+
+      const idsCompartilhados = new Set(data.map((pergunta) => pergunta.id));
+      const perguntasLegadas = carregarPerguntasLegadas()
+        .filter((pergunta) => !idsCompartilhados.has(pergunta.id));
+      let perguntasCarregadas = data;
+
+      if (perguntasLegadas.length > 0) {
+        const { data: perguntasMigradas, error: erroMigracao } = await supabase
+          .from('perguntas')
+          .insert(perguntasLegadas)
+          .select('id, pergunta, opcoes, correta');
+        if (erroMigracao) throw erroMigracao;
+        perguntasCarregadas = [...data, ...perguntasMigradas];
+        setMensagemMigracao(`${perguntasMigradas.length} pergunta(s) antigas deste navegador foram copiadas para o banco compartilhado.`);
+      } else {
+        setMensagemMigracao('');
+      }
+
+      setPerguntasPersonalizadas(perguntasCarregadas);
+      setErroCarregamentoPerguntas('');
+      setSenhaAdmin('');
+      abrirGerenciador();
+      setFase('admin');
+    } catch (error) {
+      const { error: erroSaida } = sessaoIniciada
+        ? await supabase.auth.signOut()
+        : { error: null };
+      setErroAdmin(`Não foi possível entrar no painel: ${error.message}${erroSaida ? ` Também não foi possível encerrar a sessão: ${erroSaida.message}` : ''}`);
+    } finally {
+      setCarregandoAdmin(false);
+    }
   };
 
-  const sairDoAdmin = () => {
+  const sairDoAdmin = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      setErroAdmin(`Não foi possível encerrar a sessão: ${error.message}`);
+      return;
+    }
     setFase('login');
     setSenhaAdmin('');
-    setErroAdmin(false);
+    setErroAdmin('');
   };
 
   return (
@@ -449,7 +546,13 @@ export default function App() {
                     * Por favor, digite seu nome para começar!
                   </p>
                 )}
-                {perguntasDisponiveis.length === 0 && (
+                {carregandoPerguntas && (
+                  <p className="text-xs text-slate-300" role="status">Carregando perguntas compartilhadas...</p>
+                )}
+                {erroCarregamentoPerguntas && (
+                  <p className="text-xs text-rose-300" role="alert">{erroCarregamentoPerguntas}</p>
+                )}
+                {!carregandoPerguntas && !erroCarregamentoPerguntas && perguntasDisponiveis.length === 0 && (
                   <p className="text-xs text-amber-200" role="status">
                     {perguntasPersonalizadas.length === 0
                       ? 'Peça ao administrador para cadastrar perguntas e liberar o jogo.'
@@ -460,7 +563,7 @@ export default function App() {
 
               <button
                 onClick={iniciarComTransicao}
-                disabled={perguntasDisponiveis.length === 0}
+                disabled={carregandoPerguntas || Boolean(erroCarregamentoPerguntas) || perguntasDisponiveis.length === 0}
                 className="w-full bg-emerald-700 hover:bg-emerald-600 active:scale-95 text-white font-bold py-3.5 px-6 rounded-xl shadow-lg shadow-emerald-900/40 transition-all duration-200 flex items-center justify-center gap-2 text-base cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-700 disabled:active:scale-100"
               >
                 <Play className="w-5 h-5 fill-current" />
@@ -470,7 +573,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  setErroAdmin(false);
+                  setErroAdmin('');
+                  setEmailAdmin('');
                   setSenhaAdmin('');
                   setFase('admin-login');
                 }}
@@ -526,6 +630,20 @@ export default function App() {
               <h1 className="text-2xl font-extrabold text-white">Acesso do administrador</h1>
             </div>
             <label className="block space-y-2">
+              <span className="text-xs font-medium text-slate-300 uppercase tracking-wider">E-mail</span>
+              <input
+                type="email"
+                autoComplete="username"
+                value={emailAdmin}
+                onChange={(evento) => {
+                  setEmailAdmin(evento.target.value);
+                  setErroAdmin('');
+                }}
+                required
+                className="w-full bg-[#183427]/90 border border-emerald-900 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </label>
+            <label className="block space-y-2">
               <span className="text-xs font-medium text-slate-300 uppercase tracking-wider">Senha</span>
               <input
                 type="password"
@@ -533,15 +651,16 @@ export default function App() {
                 value={senhaAdmin}
                 onChange={(evento) => {
                   setSenhaAdmin(evento.target.value);
-                  setErroAdmin(false);
+                  setErroAdmin('');
                 }}
                 required
                 className="w-full bg-[#183427]/90 border border-emerald-900 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
             </label>
-            {erroAdmin && <p role="alert" className="text-sm text-rose-300">Senha incorreta. Tente novamente.</p>}
-            <button type="submit" className="w-full bg-emerald-700 hover:bg-emerald-600 text-white font-bold py-3 px-6 rounded-xl transition-colors">
-              Entrar como administrador
+            {erroAdmin && <p role="alert" className="text-sm text-rose-300">{erroAdmin}</p>}
+            {mensagemMigracao && <p role="status" className="text-sm text-emerald-300">{mensagemMigracao}</p>}
+            <button type="submit" disabled={carregandoAdmin} className="w-full bg-emerald-700 hover:bg-emerald-600 text-white font-bold py-3 px-6 rounded-xl transition-colors disabled:opacity-60">
+              {carregandoAdmin ? 'Verificando acesso...' : 'Entrar como administrador'}
             </button>
             <button type="button" onClick={sairDoAdmin} className="w-full border border-emerald-800 text-slate-300 hover:text-white py-2.5 px-6 rounded-xl transition-colors">
               Voltar
@@ -591,6 +710,8 @@ export default function App() {
                     </button>
                   </div>
                 </header>
+
+                {erroAdmin && <p role="alert" className="text-sm text-rose-300">{erroAdmin}</p>}
 
                 <form onSubmit={salvarConfiguracaoTempo} className="space-y-3 border-b border-emerald-900 pb-6">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -685,10 +806,11 @@ export default function App() {
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="submit"
+                      disabled={salvandoPergunta}
                       className="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-600 text-white font-semibold px-4 py-2.5 rounded-lg text-sm"
                     >
                       {perguntaEditandoId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
-                      {perguntaEditandoId ? 'Salvar alterações' : 'Adicionar pergunta'}
+                      {salvandoPergunta ? 'Salvando...' : perguntaEditandoId ? 'Salvar alterações' : 'Adicionar pergunta'}
                     </button>
                     {perguntaEditandoId && (
                       <button
