@@ -89,6 +89,7 @@ const carregarPerguntasLegadas = () => {
 };
 
 const RANKING_KEY = 'ecoplay-ranking-v1';
+const RANKING_MIGRADO_KEY = 'ecoplay-ranking-compartilhado-v1';
 
 const carregarRanking = () => {
   try {
@@ -104,7 +105,9 @@ export default function App() {
   const [nomeJogador, setNomeJogador] = useState('');
   const [erroNome, setErroNome] = useState(false);
   const [ranking, setRanking] = useState(carregarRanking);
-  const [rankingSalvo, setRankingSalvo] = useState(false);
+  const [carregandoRanking, setCarregandoRanking] = useState(Boolean(supabaseConfigured));
+  const [erroRanking, setErroRanking] = useState('');
+  const [salvandoPontuacao, setSalvandoPontuacao] = useState(false);
   const [perguntasPersonalizadas, setPerguntasPersonalizadas] = useState([]);
   const [carregandoPerguntas, setCarregandoPerguntas] = useState(true);
   const [erroCarregamentoPerguntas, setErroCarregamentoPerguntas] = useState('');
@@ -134,10 +137,96 @@ export default function App() {
   const [maiorStreak, setMaiorStreak] = useState(0);
   const [fimPorPerguntas, setFimPorPerguntas] = useState(false);
   const avancoTimerRef = useRef(null);
+  const pontuacaoEnviadaRef = useRef(false);
 
   const perguntasDisponiveis = perguntasPersonalizadas.filter(
     (pergunta) => !idsPerguntasUsadas.includes(pergunta.id)
   );
+
+  const carregarRankingCompartilhado = useCallback(async () => {
+    if (!supabaseConfigured) {
+      setCarregandoRanking(false);
+      return;
+    }
+
+    setCarregandoRanking(true);
+    try {
+      const { data, error } = await supabase
+        .from('ranking_publico')
+        .select('id, nome, pontos, created_at')
+        .order('pontos', { ascending: false })
+        .order('created_at', { ascending: true })
+        .limit(5);
+
+      if (error) throw error;
+
+      const rankingCompartilhado = data.map((jogador) => ({
+        id: jogador.id,
+        nome: jogador.nome,
+        pontos: jogador.pontos,
+        data: new Date(jogador.created_at).toLocaleDateString('pt-BR')
+      }));
+      setRanking(rankingCompartilhado);
+      setErroRanking('');
+      try {
+        localStorage.setItem(RANKING_KEY, JSON.stringify(rankingCompartilhado));
+      } catch {
+        // The shared ranking remains available even when local storage is unavailable.
+      }
+    } catch (error) {
+      setErroRanking(`Não foi possível carregar o ranking compartilhado: ${error.message}`);
+    } finally {
+      setCarregandoRanking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let ativo = true;
+
+    const carregarRankingInicial = async () => {
+      if (!supabaseConfigured) {
+        setCarregandoRanking(false);
+        return;
+      }
+
+      try {
+        if (localStorage.getItem(RANKING_MIGRADO_KEY) !== 'true') {
+          const rankingAntigo = carregarRanking()
+            .filter((jogador) =>
+              jogador &&
+              typeof jogador.nome === 'string' &&
+              jogador.nome.trim() &&
+              Number.isInteger(jogador.pontos) &&
+              jogador.pontos >= 0
+            );
+
+          if (rankingAntigo.length > 0) {
+            const { error } = await supabase.from('pontuacoes').insert(
+              rankingAntigo.map((jogador) => ({
+                nome: jogador.nome.trim().slice(0, 20),
+                pontos: jogador.pontos
+              }))
+            );
+            if (error) throw error;
+          }
+
+          localStorage.setItem(RANKING_MIGRADO_KEY, 'true');
+        }
+
+        await carregarRankingCompartilhado();
+      } catch (error) {
+        if (ativo) {
+          setErroRanking(`Não foi possível compartilhar o ranking: ${error.message}`);
+          setCarregandoRanking(false);
+        }
+      }
+    };
+
+    carregarRankingInicial();
+    return () => {
+      ativo = false;
+    };
+  }, [carregarRankingCompartilhado]);
 
   useEffect(() => {
     let ativo = true;
@@ -175,8 +264,9 @@ export default function App() {
     };
   }, []);
 
-  const salvarPontuacao = useCallback((pontuacaoFinal) => {
-    if (!nomeJogador.trim() || rankingSalvo) return;
+  const salvarPontuacao = useCallback(async (pontuacaoFinal) => {
+    if (!nomeJogador.trim() || pontuacaoEnviadaRef.current) return;
+    pontuacaoEnviadaRef.current = true;
 
     const jogadorAtualizado = {
       id: Date.now(),
@@ -205,8 +295,24 @@ export default function App() {
     } catch {
       // Keep the completed game usable even when browser storage is unavailable.
     }
-    setRankingSalvo(true);
-  }, [nomeJogador, ranking, rankingSalvo]);
+
+    if (!supabaseConfigured) return;
+
+    setSalvandoPontuacao(true);
+    setErroRanking('');
+    try {
+      const { error } = await supabase.from('pontuacoes').insert({
+        nome: jogadorAtualizado.nome,
+        pontos: pontuacaoFinal
+      });
+      if (error) throw error;
+      await carregarRankingCompartilhado();
+    } catch (error) {
+      setErroRanking(`Não foi possível salvar sua pontuação no ranking compartilhado: ${error.message}`);
+    } finally {
+      setSalvandoPontuacao(false);
+    }
+  }, [carregarRankingCompartilhado, nomeJogador, ranking]);
 
   const abrirGerenciador = (pergunta = null) => {
     setPerguntaEditandoId(pergunta?.id ?? null);
@@ -286,7 +392,8 @@ export default function App() {
     if (perguntasParaJogar.length === 0) return;
 
     setErroNome(false);
-    setRankingSalvo(false);
+    setErroNome(false);
+    setErroRanking('');
     setFimPorPerguntas(false);
     if (reiniciarPerguntas) setIdsPerguntasUsadas([]);
     setFase('transicao');
@@ -385,7 +492,7 @@ export default function App() {
   const voltarAoInicio = () => {
     setNomeJogador('');
     setErroNome(false);
-    setRankingSalvo(false);
+    pontuacaoEnviadaRef.current = false;
     setFase('login');
     setIndicePergunta(0);
     setPontos(0);
@@ -399,9 +506,17 @@ export default function App() {
     setFimPorPerguntas(false);
   };
 
-  const limparRanking = () => {
+  const limparRanking = async () => {
+    setErroAdmin('');
+    const { error } = await supabase.from('pontuacoes').delete().not('id', 'is', null);
+    if (error) {
+      setErroAdmin(`Não foi possível limpar o ranking: ${error.message}`);
+      return;
+    }
+
     localStorage.removeItem(RANKING_KEY);
     setRanking([]);
+    setErroRanking('');
   };
 
   const salvarConfiguracaoTempo = (evento) => {
@@ -589,11 +704,17 @@ export default function App() {
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-bold text-white flex items-center gap-2">
                   <Trophy className="w-5 h-5 text-amber-400" />
-                  Ranking local
+                  Ranking geral
                 </h2>
               </div>
 
-              {ranking.length === 0 ? (
+              {erroRanking && (
+                <p role="alert" className="mb-3 text-sm text-rose-300">{erroRanking}</p>
+              )}
+
+              {carregandoRanking ? (
+                <div className="text-sm text-slate-400 py-8 text-center">Carregando ranking...</div>
+              ) : ranking.length === 0 ? (
                 <div className="text-sm text-slate-400 py-8 text-center">
                   Ainda não há jogadas salvas.
                 </div>
@@ -608,7 +729,7 @@ export default function App() {
                         <p className="font-semibold text-white">#{index + 1} {jogador.nome}</p>
                         <p className="text-xs text-slate-400">{jogador.data}</p>
                       </div>
-                      <span className="text-lg font-black text-amber-300">{jogador.pontos}</span>
+                      <span className="text-lg font-black text-amber-300">{jogador.pontos} pts</span>
                     </div>
                   ))}
                 </div>
@@ -984,6 +1105,11 @@ export default function App() {
               {pontos} pontos
             </div>
           </div>
+
+          {salvandoPontuacao && (
+            <p role="status" className="text-sm text-slate-300">Salvando pontuação no ranking geral...</p>
+          )}
+          {erroRanking && <p role="alert" className="text-sm text-rose-300">{erroRanking}</p>}
 
           <div className="bg-[#183427]/70 border border-emerald-900/70 rounded-2xl p-4 text-left space-y-3">
             <div className="flex items-center justify-between text-sm text-slate-300">
